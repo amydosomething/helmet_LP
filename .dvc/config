@@ -1,0 +1,7 @@
+[core]
+    remote = gdrive
+['remote "localremote"']
+    url = D:/NOTES/amrin notes/ML/dvc-storage
+['remote "gdrive"']
+    url = gdrive://1NAJjfPOGc090oBpE8QzLflEIGiriHFoj
+    gdrive_use_service_account = false
