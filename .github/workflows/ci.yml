@@ -7,6 +7,8 @@ on:
 jobs:
   retrain:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write          # ← allows git push back to repo
 
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────
