@@ -1,0 +1,23 @@
+#Python 3.10.11
+
+# Core detection & tracking
+ultralytics==8.4.19
+
+# OCR
+paddlepaddle==2.6.2
+paddleocr==2.7.3
+
+# Vision / data
+opencv-python>=4.8.0
+numpy<2.0
+pandas>=2.0.0
+
+# Dashboard
+streamlit>=1.35.0
+
+# MLOps
+mlflow>=2.11.0
+dvc[gdrive]>=3.49.0
+
+
+

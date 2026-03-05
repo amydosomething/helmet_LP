@@ -1,0 +1,74 @@
+name: CI/CD — Retrain on Challan-Verified Frames
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python ────────────────────────────────────────────────────────
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # ── 3. Install dependencies ──────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ultralytics mlflow "dvc[gdrive]" opencv-python "numpy<2.0" pyyaml pandas
+
+      # ── 4. Syntax check all source files ─────────────────────────────────
+      - name: Syntax check
+        run: |
+          python -m py_compile Source/Preprocess.py
+          python -m py_compile Source/_myFunc.py
+          python -m py_compile Source/_ReadLP.py
+          python -m py_compile Source/_LP_Helmet.py
+          python -m py_compile Source/_Mainn.py
+          python -m py_compile dashboard.py
+          echo "All source files OK"
+
+      # ── 5. Pull model from DVC (Google Drive) ────────────────────────────
+      - name: Configure DVC remote
+        env:
+          GDRIVE_CREDENTIALS_DATA: ${{ secrets.GDRIVE_CREDENTIALS_DATA }}
+        run: |
+          dvc remote add -d gdrive gdrive://${{ secrets.GDRIVE_FOLDER_ID }} --force
+          dvc pull model/best.pt
+
+      # ── 6. Prepare training data from challan-issued frames ───────────────
+      - name: Prepare data
+        run: python prepare_data.py
+
+      # ── 7. Fine-tune model ────────────────────────────────────────────────
+      - name: Fine-tune model
+        run: python train.py --epochs 30 --batch 4 --imgsz 640
+
+      # ── 8. Log metrics to MLflow ──────────────────────────────────────────
+      - name: Log metrics to MLflow
+        run: python log_training_run.py
+
+      # ── 9. Push updated model to Google Drive via DVC ─────────────────────
+      - name: Push updated model
+        env:
+          GDRIVE_CREDENTIALS_DATA: ${{ secrets.GDRIVE_CREDENTIALS_DATA }}
+        run: |
+          dvc add model/best.pt
+          dvc push
+
+      # ── 10. Commit updated .dvc pointer file back to repo ─────────────────
+      - name: Commit updated model pointer
+        run: |
+          git config user.email "ci@github.com"
+          git config user.name "GitHub Actions"
+          git add model/best.pt.dvc model/.gitignore
+          git diff --staged --quiet || git commit -m "CI: update model/best.pt after fine-tuning [skip ci]"
+          git push

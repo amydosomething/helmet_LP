@@ -1,0 +1,12 @@
+# Dataset config for YOLOv8 fine-tuning
+# Paths are relative to the project root (helmet_LP/)
+path: data
+train: train/images
+val:   valid/images
+
+nc: 4
+names:
+  - rider
+  - helmet
+  - nohelmet
+  - numberplate
