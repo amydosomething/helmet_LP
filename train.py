@@ -17,7 +17,19 @@ MODEL_PATH = os.path.join(ROOT, "model", "best.pt")
 DATA_YAML  = os.path.join(ROOT, "data.yaml")
 
 
+def count_train_images():
+    img_dir = os.path.join(ROOT, "data", "train", "images")
+    if not os.path.isdir(img_dir):
+        return 0
+    return len([f for f in os.listdir(img_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+
+
 def train(epochs, batch, imgsz):
+    n = count_train_images()
+    if n > 0:
+        epochs = min(epochs, max(5, n * 3))
+        print(f"Dataset size: {n} image(s) → running {epochs} epoch(s)")
+
     model = YOLO(MODEL_PATH)           # start from existing weights — fine-tune
     model.train(
         data=DATA_YAML,

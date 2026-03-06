@@ -53,6 +53,7 @@ jobs:
       # ── 7. Fine-tune model ────────────────────────────────────────────────
       - name: Fine-tune model
         run: python train.py --epochs 30 --batch 4 --imgsz 640
+        # epochs are auto-scaled in train.py: min(30, max(5, n_images * 3))
 
       # ── 8. Log metrics to MLflow ──────────────────────────────────────────
       - name: Log metrics to MLflow
