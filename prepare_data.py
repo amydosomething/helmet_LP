@@ -3,11 +3,14 @@ prepare_data.py
 ---------------
 Two sources of training data:
 
-1. violation_certain.csv  — rows with Status == "Challan Issued"
+1. violation_certain.csv  — rows with Status == "Challan Issued" and Trained != "yes"
    → confirmed nohelmet violations; auto-labelled with best.pt
 
-2. violation_rejected.csv — rows rejected by the admin (e.g. "helmet present")
+2. violation_rejected.csv — rows with Trained != "yes"
    → false positives; nohelmet boxes are relabelled as helmet (corrective training)
+
+After processing, each row is marked Trained=yes so it is never used again.
+The updated CSVs are saved and committed back to the repo by CI step 10.
 
 Run automatically by the CI pipeline, or manually:
     python prepare_data.py
@@ -15,8 +18,8 @@ Run automatically by the CI pipeline, or manually:
 
 import os
 import shutil
-import csv
 import random
+import pandas as pd
 from ultralytics import YOLO
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -40,37 +43,54 @@ CLS_HELMET   = 1
 def resolve_image_path(raw_path):
     """Try the stored path first; if not found (e.g. absolute Windows path on Linux runner),
     fall back to looking for the filename inside violation_imgs/."""
-    if raw_path and os.path.exists(raw_path):
+    if not raw_path:
+        return None
+    raw_path = str(raw_path).strip()
+    if os.path.exists(raw_path):
         return raw_path
     fname = os.path.basename(raw_path.replace("\\", "/"))
     fallback = os.path.join(VIOLATION_IMGS, fname)
     return fallback if os.path.exists(fallback) else None
 
-# ── Read challan-issued images ────────────────────────────────────────────────
-rider_images = []
-with open(CERTAIN_CSV, newline="", encoding="utf-8") as f:
-    for row in csv.DictReader(f):
-        if row.get("Status", "").strip() == "Challan Issued":
-            img_path = resolve_image_path(row.get("RiderImage", "").strip())
-            if img_path:
-                rider_images.append(img_path)
+# ── Load CSVs, ensure Trained column exists ───────────────────────────────────
+certain_df = pd.read_csv(CERTAIN_CSV) if os.path.exists(CERTAIN_CSV) else pd.DataFrame()
+if not certain_df.empty and "Trained" not in certain_df.columns:
+    certain_df["Trained"] = ""
 
-# ── Read rejected (false-positive) images ─────────────────────────────────────
-rejected_images = []
-if os.path.exists(REJECTED_CSV):
-    with open(REJECTED_CSV, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            img_path = resolve_image_path(row.get("RiderImage", "").strip())
-            if img_path:
-                rejected_images.append(img_path)
+rejected_df = pd.read_csv(REJECTED_CSV) if os.path.exists(REJECTED_CSV) else pd.DataFrame()
+if not rejected_df.empty and "Trained" not in rejected_df.columns:
+    rejected_df["Trained"] = ""
+
+# ── Filter to only untrained rows ─────────────────────────────────────────────
+def untrained(df):
+    if df.empty:
+        return df
+    return df[df["Trained"].astype(str).str.strip().str.lower() != "yes"]
+
+new_certain  = untrained(certain_df[certain_df.get("Status", pd.Series(dtype=str)).astype(str).str.strip() == "Challan Issued"]) \
+               if not certain_df.empty and "Status" in certain_df.columns else pd.DataFrame()
+new_rejected = untrained(rejected_df) if not rejected_df.empty else pd.DataFrame()
+
+rider_images   = []   # (index_in_certain_df, path)
+rejected_pairs = []   # (index_in_rejected_df, path)
+
+for idx, row in new_certain.iterrows():
+    p = resolve_image_path(row.get("RiderImage", ""))
+    if p:
+        rider_images.append((idx, p))
+
+for idx, row in new_rejected.iterrows():
+    p = resolve_image_path(row.get("RiderImage", ""))
+    if p:
+        rejected_pairs.append((idx, p))
 
 # ── Exit only if both sources are empty ───────────────────────────────────────
-if not rider_images and not rejected_images:
-    print("No training data found. Nothing to prepare.")
+if not rider_images and not rejected_pairs:
+    print("No new training data found. Nothing to prepare.")
     raise SystemExit(0)
 
-print(f"Found {len(rider_images)} challan-issued image(s).")
-print(f"Found {len(rejected_images)} rejected (false-positive) image(s).")
+print(f"New challan-issued image(s)  : {len(rider_images)}")
+print(f"New rejected (corrective)    : {len(rejected_pairs)}")
 
 # ── Load model ────────────────────────────────────────────────────────────────
 model = YOLO(MODEL_PATH)
@@ -104,31 +124,38 @@ splits = {"train": [], "valid": []}
 if rider_images:
     random.seed(42)
     random.shuffle(rider_images)
-    split = max(1, int(len(rider_images) * 0.8))
-    splits["train"] = rider_images[:split]
-    splits["valid"] = rider_images[split:] if len(rider_images) > 1 else rider_images[:1]
+    s = max(1, int(len(rider_images) * 0.8))
+    splits["train"] = rider_images[:s]
+    splits["valid"] = rider_images[s:] if len(rider_images) > 1 else rider_images[:1]
 
-    for split_name, paths in splits.items():
+    for split_name, pairs in splits.items():
         img_dir = TRAIN_IMAGES if split_name == "train" else VALID_IMAGES
         lbl_dir = TRAIN_LABELS if split_name == "train" else VALID_LABELS
-        for src in paths:
+        for idx, src in pairs:
             fname   = os.path.basename(src)
             dst_img = os.path.join(img_dir, fname)
             dst_lbl = os.path.join(lbl_dir, os.path.splitext(fname)[0] + ".txt")
             shutil.copy2(src, dst_img)
             generate_label(dst_img, dst_lbl)
+            certain_df.at[idx, "Trained"] = "yes"   # mark as trained
             print(f"[{split_name}] {fname} → labelled")
 
 # ── Rejected frames → corrective helmet labels (train only) ───────────────────
-for src in rejected_images:
+for idx, src in rejected_pairs:
     fname   = os.path.basename(src)
-    dst_img = os.path.join(TRAIN_IMAGES, "rej_" + fname)   # rej_ prefix avoids filename collision
+    dst_img = os.path.join(TRAIN_IMAGES, "rej_" + fname)   # rej_ prefix avoids collision
     dst_lbl = os.path.join(TRAIN_LABELS, "rej_" + os.path.splitext(fname)[0] + ".txt")
     shutil.copy2(src, dst_img)
     generate_corrective_label(dst_img, dst_lbl)
+    rejected_df.at[idx, "Trained"] = "yes"   # mark as trained
     print(f"[rejected→helmet] {fname} relabelled")
+
+# ── Save updated CSVs (CI will commit them back) ──────────────────────────────
+certain_df.to_csv(CERTAIN_CSV, index=False)
+if not rejected_df.empty:
+    rejected_df.to_csv(REJECTED_CSV, index=False)
 
 print("\nData preparation complete.")
 print(f"  Challan train : {len(splits['train'])} image(s)")
 print(f"  Challan valid : {len(splits['valid'])} image(s)")
-print(f"  Corrective    : {len(rejected_images)} image(s)")
+print(f"  Corrective    : {len(rejected_pairs)} image(s)")

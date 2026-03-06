@@ -72,6 +72,6 @@ jobs:
         run: |
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
-          git add model/best.pt.dvc model/.gitignore
-          git diff --staged --quiet || git commit -m "CI: update model/best.pt after fine-tuning [skip ci]"
+          git add model/best.pt.dvc model/.gitignore violation_certain.csv violation_rejected.csv
+          git diff --staged --quiet || git commit -m "CI: update model pointer + mark images as trained [skip ci]"
           git push
