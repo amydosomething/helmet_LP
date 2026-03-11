@@ -50,17 +50,29 @@ jobs:
       - name: Prepare data
         run: python prepare_data.py
 
+      - name: Check if training data exists
+        id: check_data
+        run: |
+          if [ -f ".has_training_data" ] && [ "$(cat .has_training_data)" = "false" ]; then
+            echo "has_data=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_data=true" >> $GITHUB_OUTPUT
+          fi
+
       # ── 7. Fine-tune model ────────────────────────────────────────────────
       - name: Fine-tune model
+        if: steps.check_data.outputs.has_data == 'true'
         run: python train.py --epochs 30 --batch 4 --imgsz 640
         # epochs are auto-scaled in train.py: min(30, max(5, n_images * 3))
 
       # ── 8. Log metrics to MLflow ──────────────────────────────────────────
       - name: Log metrics to MLflow
+        if: steps.check_data.outputs.has_data == 'true'
         run: python log_training_run.py
 
       # ── 9. Push updated model to Google Drive via DVC ─────────────────────
       - name: Push updated model
+        if: steps.check_data.outputs.has_data == 'true'
         env:
           GDRIVE_CREDENTIALS_DATA: ${{ secrets.GDRIVE_CREDENTIALS_DATA }}
         run: |
@@ -69,6 +81,7 @@ jobs:
 
       # ── 10. Commit updated .dvc pointer file back to repo ─────────────────
       - name: Commit updated model pointer
+        if: steps.check_data.outputs.has_data == 'true'
         run: |
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"

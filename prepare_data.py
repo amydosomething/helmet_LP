@@ -87,6 +87,8 @@ for idx, row in new_rejected.iterrows():
 # ── Exit only if both sources are empty ───────────────────────────────────────
 if not rider_images and not rejected_pairs:
     print("No new training data found. Nothing to prepare.")
+    with open(".has_training_data", "w") as f:
+        f.write("false")
     raise SystemExit(0)
 
 print(f"New challan-issued image(s)  : {len(rider_images)}")
