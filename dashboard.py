@@ -5,9 +5,36 @@ Run from the project root:
 """
 
 import os
+from groq import Groq
 from datetime import datetime
 import streamlit as st
 import pandas as pd
+from dotenv import load_dotenv
+
+load_dotenv()
+_groq_key = os.getenv("GROQ_API_KEY", "")
+
+def ask_gemini(question, certain_df, uncertain_df, rejected_df):
+    parts = []
+    if not certain_df.empty:
+        parts.append(f"Certain violations:\n{certain_df.to_string(index=False)}")
+    if not uncertain_df.empty:
+        parts.append(f"Uncertain violations:\n{uncertain_df.to_string(index=False)}")
+    if not rejected_df.empty:
+        parts.append(f"Rejected (false positives):\n{rejected_df.to_string(index=False)}")
+    context = "\n\n".join(parts) if parts else "No data available yet."
+
+    prompt = (
+        "You are an assistant for a traffic helmet violation detection system. "
+        "Answer using only the data below. Be concise.\n\n"
+        f"Data:\n{context}\n\nQuestion: {question}"
+    )
+    client = Groq(api_key=_groq_key)
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -85,10 +112,11 @@ m3.metric("⚠️ Uncertain",          len(uncertain_df))
 m4.metric("❌ Rejected",            len(rejected_df))
 st.markdown("---")
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "✅ Certain Violations",
     "⚠️ Uncertain — Needs Review",
     "❌ Rejected (Audit Trail)",
+    "🤖 Ask AI",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -205,79 +233,102 @@ with tab2:
     if uncertain_df.empty:
         st.info("No uncertain violations pending review.")
     else:
-        st.markdown(
-            "These violations could not be read automatically. "
-            "Enter the correct plate and **Accept**, or **Reject** as a false positive."
+        unc_summary_cols = [c for c in
+                            ["Timestamp","Frame","Plate","Owner","Status"]
+                            if c in uncertain_df.columns]
+
+        st.caption("Click a row to review it.")
+        unc_event = st.dataframe(
+            uncertain_df[unc_summary_cols],
+            use_container_width=True,
+            selection_mode="single-row",
+            on_select="rerun",
+            key="uncertain_table",
         )
 
-        for i, row in uncertain_df.iterrows():
+        unc_selected = unc_event.selection.rows
+        if not unc_selected:
+            st.info("Select a row above to review it.")
+        else:
+            idx = unc_selected[0]
+            i   = uncertain_df.index[idx]
+            row = uncertain_df.loc[i]
+
             ts    = str(row.get("Timestamp", f"Record {i}"))
             frame = row.get("Frame", "?")
 
-            with st.expander(f"Frame {frame}  |  {ts}"):
-                img_col, action_col = st.columns([2, 1])
+            st.markdown("---")
+            st.markdown(f"### Reviewing: Frame **{frame}** — {ts}")
 
-                with img_col:
-                    show_images(row.get("RiderImage", ""), row.get("PlateImage", ""))
+            img_col, action_col = st.columns([2, 1])
 
-                with action_col:
-                    # ── Accept ────────────────────────────────────────────
-                    st.markdown("**✅ Accept — Enter Correct Plate**")
-                    plate_input = st.text_input(
-                        "Plate number:", key=f"unc_plate_{i}",
-                        placeholder="e.g. MH12LC9488"
-                    ).upper().strip()
-                    if st.button("✅ Accept & Move to Certain",
-                                 key=f"accept_{i}", type="primary"):
-                        if plate_input:
-                            name, gmail = lookup_owner(plate_input)
-                            new_row = {
-                                "Timestamp"       : ts,
-                                "Frame"           : frame,
-                                "Plate"           : plate_input,
-                                "Owner"           : name,
-                                "Gmail"           : gmail,
-                                "Status"          : "Manually Verified",
-                                "ChallanTimestamp": "",
-                                "RiderImage"      : row.get("RiderImage", ""),
-                                "PlateImage"      : row.get("PlateImage", ""),
-                            }
-                            cert_df = load_csv(CERTAIN_CSV)
-                            cert_df = ensure_col(cert_df, "ChallanTimestamp")
-                            cert_df = pd.concat(
-                                [cert_df, pd.DataFrame([new_row])], ignore_index=True)
-                            save_csv(cert_df, CERTAIN_CSV)
-                            uncertain_df = uncertain_df.drop(index=i).reset_index(drop=True)
-                            save_csv(uncertain_df, UNCERTAIN_CSV)
-                            st.success(f"Accepted as {plate_input} — moved to Certain.")
-                            st.rerun()
-                        else:
-                            st.error("Please enter the correct plate number.")
+            with img_col:
+                show_images(row.get("RiderImage", ""), row.get("PlateImage", ""))
 
-                    st.markdown("---")
+            with action_col:
+                for field in ["Frame","Plate","Owner","Status"]:
+                    if field in row:
+                        st.write(f"**{field}:** {row[field]}")
 
-                    # ── Reject ────────────────────────────────────────────
-                    st.markdown("**❌ Reject as False Positive**")
-                    rej_reason = st.text_input(
-                        "Rejection reason:", key=f"unc_reason_{i}",
-                        placeholder="e.g. Rider was wearing helmet"
-                    )
-                    if st.button("❌ Reject", key=f"unc_reject_{i}"):
-                        if rej_reason.strip():
-                            rejected_row = row.to_dict()
-                            rejected_row["RejectedAt"]      = \
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            rejected_row["RejectionReason"] = rej_reason.strip()
-                            rej_df = load_csv(REJECTED_CSV)
-                            rej_df = pd.concat(
-                                [rej_df, pd.DataFrame([rejected_row])], ignore_index=True)
-                            save_csv(rej_df, REJECTED_CSV)
-                            uncertain_df = uncertain_df.drop(index=i).reset_index(drop=True)
-                            save_csv(uncertain_df, UNCERTAIN_CSV)
-                            st.success("Rejected — moved to audit trail.")
-                            st.rerun()
-                        else:
-                            st.error("Please enter a rejection reason.")
+                st.markdown("---")
+
+                # ── Accept ────────────────────────────────────────────
+                st.markdown("**✅ Accept — Enter Correct Plate**")
+                plate_input = st.text_input(
+                    "Plate number:", key=f"unc_plate_{i}",
+                    placeholder="e.g. MH12LC9488"
+                ).upper().strip()
+                if st.button("✅ Accept & Move to Certain",
+                             key=f"accept_{i}", type="primary"):
+                    if plate_input:
+                        name, gmail = lookup_owner(plate_input)
+                        new_row = {
+                            "Timestamp"       : ts,
+                            "Frame"           : frame,
+                            "Plate"           : plate_input,
+                            "Owner"           : name,
+                            "Gmail"           : gmail,
+                            "Status"          : "Manually Verified",
+                            "ChallanTimestamp": "",
+                            "RiderImage"      : row.get("RiderImage", ""),
+                            "PlateImage"      : row.get("PlateImage", ""),
+                        }
+                        cert_df = load_csv(CERTAIN_CSV)
+                        cert_df = ensure_col(cert_df, "ChallanTimestamp")
+                        cert_df = pd.concat(
+                            [cert_df, pd.DataFrame([new_row])], ignore_index=True)
+                        save_csv(cert_df, CERTAIN_CSV)
+                        uncertain_df = uncertain_df.drop(index=i).reset_index(drop=True)
+                        save_csv(uncertain_df, UNCERTAIN_CSV)
+                        st.success(f"Accepted as {plate_input} — moved to Certain.")
+                        st.rerun()
+                    else:
+                        st.error("Please enter the correct plate number.")
+
+                st.markdown("---")
+
+                # ── Reject ────────────────────────────────────────────
+                st.markdown("**❌ Reject as False Positive**")
+                rej_reason = st.text_input(
+                    "Rejection reason:", key=f"unc_reason_{i}",
+                    placeholder="e.g. Rider was wearing helmet"
+                )
+                if st.button("❌ Reject", key=f"unc_reject_{i}"):
+                    if rej_reason.strip():
+                        rejected_row = row.to_dict()
+                        rejected_row["RejectedAt"]      = \
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        rejected_row["RejectionReason"] = rej_reason.strip()
+                        rej_df = load_csv(REJECTED_CSV)
+                        rej_df = pd.concat(
+                            [rej_df, pd.DataFrame([rejected_row])], ignore_index=True)
+                        save_csv(rej_df, REJECTED_CSV)
+                        uncertain_df = uncertain_df.drop(index=i).reset_index(drop=True)
+                        save_csv(uncertain_df, UNCERTAIN_CSV)
+                        st.success("Rejected — moved to audit trail.")
+                        st.rerun()
+                    else:
+                        st.error("Please enter a rejection reason.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — Rejected (Audit Trail)
@@ -286,19 +337,71 @@ with tab3:
     if rejected_df.empty:
         st.info("No rejected violations yet.")
     else:
-        cols_to_show = [c for c in
-                        ["Timestamp","Frame","Plate","Owner","Status",
-                         "RejectedAt","RejectionReason"]
-                        if c in rejected_df.columns]
-        st.dataframe(rejected_df[cols_to_show], use_container_width=True)
+        rej_summary_cols = [c for c in
+                            ["Timestamp","Frame","Plate","Owner","Status",
+                             "RejectedAt","RejectionReason"]
+                            if c in rejected_df.columns]
 
-        st.markdown("---")
-        st.markdown("### Evidence")
-        for i, row in rejected_df.iterrows():
+        st.caption("Click a row to view evidence.")
+        rej_event = st.dataframe(
+            rejected_df[rej_summary_cols],
+            use_container_width=True,
+            selection_mode="single-row",
+            on_select="rerun",
+            key="rejected_table",
+        )
+
+        rej_selected = rej_event.selection.rows
+        if not rej_selected:
+            st.info("Select a row above to view its evidence.")
+        else:
+            idx = rej_selected[0]
+            i   = rejected_df.index[idx]
+            row = rejected_df.loc[i]
+
             ts     = str(row.get("Timestamp", f"Record {i}"))
             plate  = str(row.get("Plate", "?"))
             reason = str(row.get("RejectionReason", ""))
-            with st.expander(f"{ts}  |  Plate: {plate}  |  Reason: {reason}"):
+
+            st.markdown("---")
+            st.markdown(f"### Evidence: **{plate}** — {ts}")
+
+            img_col, info_col = st.columns([2, 1])
+            with img_col:
                 show_images(row.get("RiderImage", ""), row.get("PlateImage", ""))
+            with info_col:
+                for field in ["Plate","Owner","Status","RejectedAt","RejectionReason"]:
+                    if field in row:
+                        st.write(f"**{field}:** {row[field]}")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — AI Chatbot
+# ══════════════════════════════════════════════════════════════════════════════
+with tab4:
+    st.markdown("### 🤖 Ask about your violation data")
+
+    if not _groq_key:
+        st.error("GROQ_API_KEY not set. Add it to your .env file.")
+    else:
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
+
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        user_q = st.chat_input("Ask anything about the violations...")
+        if user_q:
+            st.session_state.chat_history.append({"role": "user", "content": user_q})
+            with st.chat_message("user"):
+                st.markdown(user_q)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        answer = ask_gemini(user_q, certain_df, uncertain_df, rejected_df)
+                    except Exception as e:
+                        answer = f"Error: {e}"
+                st.markdown(answer)
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
