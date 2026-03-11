@@ -49,10 +49,13 @@ def majority_vote(readings):
     return best[0], best[1], best[2], best[3], best[4]
 
 
-def finalize_rider(rider_id, data, current_frame):
+def finalize_rider(rider_id, data, current_frame, session_state):
     """
     Called when a rider leaves the frame or video ends.
     Runs majority vote, looks up owner, saves images, logs to correct CSV.
+    session_state deduplicates across re-acquired tracker IDs:
+      - certain: skip if same plate already logged this session
+      - uncertain: skip if a certain violation was logged within 90 frames
     """
     if not data['violation']:
         return
@@ -61,6 +64,11 @@ def finalize_rider(rider_id, data, current_frame):
     first_frame = data['first_violation_frame']
 
     if plate_text:
+        # Skip if this plate was already logged as certain in this session
+        if plate_text in session_state['logged_plates']:
+            print(f"[SKIP-DUPLICATE] Rider #{rider_id} | Frame {first_frame} | "
+                  f"Plate: {plate_text} already logged this session")
+            return
         # Plate matched Indian regex + valid state code — certain violation
         # Use tight rider crop + preprocessed plate image as evidence
         name, gmail = _myFunc.get_client_info(plate_text, CSV_PATH)
@@ -68,7 +76,15 @@ def finalize_rider(rider_id, data, current_frame):
               f"Plate: {plate_text} | Owner: {name or 'Unknown'}")
         _myFunc.log_violation(first_frame, plate_text, name, gmail, CERTAIN_LOG,
                               rider_img=rider_crop, plate_img=preprocessed_img)
+        session_state['logged_plates'].add(plate_text)
+        session_state['logged_certain_frames'].append(first_frame)
     else:
+        # Skip if a certain violation was logged within 90 frames (same physical rider
+        # re-acquired by tracker with unreadable plate on this attempt)
+        if any(abs(first_frame - f) <= 90 for f in session_state['logged_certain_frames']):
+            print(f"[SKIP-DUPLICATE] Rider #{rider_id} | Frame {first_frame} | "
+                  f"Uncertain — within 90 frames of a certain violation, skipping")
+            return
         # Plate unreadable or invalid state code — uncertain, needs human review.
         # Use extended crop (rider + bike area) so reviewer sees the full bike.
         # For plate: raw colour plate crop if YOLO found one, else extended crop.
@@ -98,6 +114,12 @@ def Program(model, path, start_frame=0, stop_frame=0):
         current_frame : Total frames processed
     """
     stop_flag = False
+
+    # Deduplication: track plates and frames logged this session
+    session_state = {
+        'logged_plates'         : set(),   # certain plates logged this run
+        'logged_certain_frames' : [],      # first_violation_frame of each certain log
+    }
 
     # rider_tracker[rider_id] = {
     #   'violation'           : bool,
@@ -184,7 +206,7 @@ def Program(model, path, start_frame=0, stop_frame=0):
                         and current_frame - data['last_seen'] >= disappear_threshold]
 
             for rid in gone_ids:
-                finalize_rider(rid, rider_tracker[rid], current_frame)
+                finalize_rider(rid, rider_tracker[rid], current_frame, session_state)
                 del rider_tracker[rid]
 
             # Display annotated frame
@@ -203,7 +225,7 @@ def Program(model, path, start_frame=0, stop_frame=0):
     # Finalize any riders still in tracker at end of video
     print("[Info] Video ended — finalizing remaining tracked riders...")
     for rid, data in rider_tracker.items():
-        finalize_rider(rid, data, current_frame)
+        finalize_rider(rid, data, current_frame, session_state)
 
     return current_frame
 

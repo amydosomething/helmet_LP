@@ -140,12 +140,12 @@ with tab1:
         )
 
         selected = event.selection.rows
-        if not selected:
+        if not selected or selected[0] >= len(certain_df):
             st.info("Select a row above to review it.")
         else:
             idx = selected[0]
+            row = certain_df.iloc[idx]
             i   = certain_df.index[idx]
-            row = certain_df.loc[i]
 
             plate      = str(row.get("Plate", "Unknown"))
             ts         = str(row.get("Timestamp", f"Record {i}"))
@@ -247,12 +247,12 @@ with tab2:
         )
 
         unc_selected = unc_event.selection.rows
-        if not unc_selected:
+        if not unc_selected or unc_selected[0] >= len(uncertain_df):
             st.info("Select a row above to review it.")
         else:
             idx = unc_selected[0]
+            row = uncertain_df.iloc[idx]
             i   = uncertain_df.index[idx]
-            row = uncertain_df.loc[i]
 
             ts    = str(row.get("Timestamp", f"Record {i}"))
             frame = row.get("Frame", "?")
@@ -352,12 +352,12 @@ with tab3:
         )
 
         rej_selected = rej_event.selection.rows
-        if not rej_selected:
+        if not rej_selected or rej_selected[0] >= len(rejected_df):
             st.info("Select a row above to view its evidence.")
         else:
             idx = rej_selected[0]
+            row = rejected_df.iloc[idx]
             i   = rejected_df.index[idx]
-            row = rejected_df.loc[i]
 
             ts     = str(row.get("Timestamp", f"Record {i}"))
             plate  = str(row.get("Plate", "?"))
