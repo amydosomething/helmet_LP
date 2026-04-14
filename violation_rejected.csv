@@ -1,2 +1,1 @@
 Timestamp,Frame,Plate,Owner,Gmail,Status,RiderImage,PlateImage,RejectedAt,RejectionReason,Trained
-2026-03-06 10:52:41,537,Unreadable,Unknown,,No Helmet,D:\NOTES\amrin notes\ML\FINAL\helmet_LP\Source\..\violation_imgs\rider_f537_20260306_105241.jpg,D:\NOTES\amrin notes\ML\FINAL\helmet_LP\Source\..\violation_imgs\plate_f537_20260306_105241.jpg,2026-03-06 11:00:00,helmet present,yes
